@@ -111,7 +111,11 @@ fun MuseumScreen(vm: MuseumViewModel) {
             )
             FooterRow(today)
             Spacer(Modifier.height(18.dp))
-            BoardHeader(open = boardOpen, onToggle = { haptic(Hap.CLICK); boardOpen = !boardOpen })
+            BoardHeader(
+                open = boardOpen,
+                onToggle = { haptic(Hap.CLICK); boardOpen = !boardOpen },
+                onGrid = { haptic(Hap.CONFIRM); vm.selectedDay.value = null; vm.showFullMuseum.value = true }
+            )
             AnimatedVisibility(boardOpen) {
                 BoardBody(
                     photos = boardPhotos,
@@ -169,11 +173,11 @@ fun MuseumScreen(vm: MuseumViewModel) {
             )
         }
 
-        // full museum grid for the day
+        // full museum carousel (a day, or everything when opened from the board grid button)
         AnimatedVisibility(full, enter = fadeIn(), exit = fadeOut()) {
             val day = selected
-            FullMuseum(
-                title = day?.format(DateTimeFormatter.ofPattern("MMM d, yyyy")) ?: "All photos",
+            MuseumCarousel(
+                title = day?.format(DateTimeFormatter.ofPattern("MMM d, yyyy")) ?: "Your Museum",
                 list = if (day != null) byDate[day].orEmpty() else visible,
                 onClose = { vm.showFullMuseum.value = false; vm.selectedDay.value = null }
             )
@@ -345,7 +349,7 @@ private fun FooterRow(today: LocalDate) {
 }
 
 @Composable
-private fun BoardHeader(open: Boolean, onToggle: () -> Unit) {
+private fun BoardHeader(open: Boolean, onToggle: () -> Unit, onGrid: () -> Unit) {
     val rot by animateFloatAsState(if (open) 0f else 180f, spring(), label = "chev")
     Box(Modifier.fillMaxWidth().background(Color(0xFF0F0F0F)).height(64.dp)) {
         Text("Todays Board", color = Color(0xFFAAAAAA), fontSize = 20.sp, modifier = Modifier.align(Alignment.CenterStart).padding(start = 26.dp))
@@ -355,7 +359,7 @@ private fun BoardHeader(open: Boolean, onToggle: () -> Unit) {
                 .clickable(onClick = onToggle),
             contentAlignment = Alignment.Center
         ) { Icon(Icons.Filled.ArrowDropUp, null, tint = Color(0xFFAAAAAA), modifier = Modifier.size(40.dp).rotate(rot)) }
-        Icon(Icons.Filled.GridView, null, tint = Color(0xFFBBBBBB), modifier = Modifier.align(Alignment.CenterEnd).padding(end = 26.dp).size(30.dp))
+        Icon(Icons.Filled.GridView, null, tint = Color(0xFFBBBBBB), modifier = Modifier.align(Alignment.CenterEnd).padding(end = 18.dp).size(44.dp).clip(CircleShape).clickable(onClick = onGrid).padding(7.dp))
     }
 }
 
@@ -445,21 +449,5 @@ private fun PolaroidCard(item: MediaItem, caption: String, modifier: Modifier) {
             contentScale = ContentScale.Crop
         )
         Text(caption, color = Color.White, fontFamily = Hand, fontSize = 30.sp, lineHeight = 30.sp, modifier = Modifier.padding(top = 10.dp, bottom = 14.dp, start = 4.dp).heightIn(min = 64.dp))
-    }
-}
-
-@Composable
-private fun FullMuseum(title: String, list: List<MediaItem>, onClose: () -> Unit) {
-    Column(Modifier.fillMaxSize().background(Ink).systemBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.Close, null, tint = Color.White, modifier = Modifier.size(32.dp).clip(CircleShape).clickable(onClick = onClose))
-            Spacer(Modifier.width(14.dp))
-            Text(title, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Medium)
-        }
-        LazyVerticalGrid(GridCells.Fixed(3), Modifier.fillMaxSize(), contentPadding = PaddingValues(4.dp)) {
-            items(list, key = { it.id.toString() + it.isVideo }) {
-                AsyncImage(it.uri, null, Modifier.padding(2.dp).aspectRatio(1f).clip(RoundedCornerShape(6.dp)), contentScale = ContentScale.Crop)
-            }
-        }
     }
 }
