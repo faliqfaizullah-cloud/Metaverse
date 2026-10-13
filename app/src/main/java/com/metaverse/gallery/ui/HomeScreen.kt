@@ -1,0 +1,403 @@
+package com.metaverse.gallery.ui
+
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.ViewCarousel
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.metaverse.gallery.MuseumViewModel
+import com.metaverse.gallery.data.MediaItem
+import com.metaverse.gallery.ui.theme.Cell
+import com.metaverse.gallery.ui.theme.Ember
+import com.metaverse.gallery.ui.theme.Hand
+import com.metaverse.gallery.ui.theme.Mono
+import com.metaverse.gallery.util.Hap
+import com.metaverse.gallery.util.rememberHaptics
+import kotlinx.coroutines.launch
+
+private val HomeBg = Color(0xFF080808)
+
+/**
+ * Home: a masonry wall of everything in the museum, a floating glass nav pill
+ * (home / search / import / favourites / profile) and a glossy bottom bar
+ * (carousel · camera · more).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun HomeScreen(vm: MuseumViewModel) {
+    val haptic = rememberHaptics()
+    val scope = rememberCoroutineScope()
+    val keyboard = LocalSoftwareKeyboardController.current
+    val items by vm.items.collectAsState()
+    val extras by vm.extras.collectAsState()
+    val favs by vm.favorites.collectAsState()
+    val query by vm.query.collectAsState()
+
+    var tab by rememberSaveable { mutableIntStateOf(0) }       // 0 home, 1 search, 3 favourites
+    var cols by rememberSaveable { mutableIntStateOf(4) }
+    var sheet by remember { mutableStateOf(false) }
+    var showCamera by rememberSaveable { mutableStateOf(false) }
+    var showCalendar by rememberSaveable { mutableStateOf(false) }
+    var showCarousel by rememberSaveable { mutableStateOf(false) }
+    var viewerAt by rememberSaveable { mutableIntStateOf(-1) }
+
+    val all = remember(items, extras) { extras + items }
+    val shown = remember(all, favs, query, tab) {
+        var l = all
+        if (tab == 3) l = l.filter { it.uri.toString() in favs }
+        if (tab == 1 && query.isNotBlank()) {
+            val q = query.trim()
+            l = l.filter {
+                it.name.contains(q, true) || it.bucket.contains(q, true) || it.date.toString().contains(q)
+            }
+        }
+        l
+    }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) { vm.addExtra(uri); haptic(Hap.CONFIRM) }
+    }
+    val gridState = rememberLazyStaggeredGridState()
+
+    BackHandler(enabled = sheet || tab != 0) {
+        if (sheet) sheet = false else { tab = 0; vm.query.value = "" }
+    }
+
+    val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val searching = tab == 1
+
+    Box(Modifier.fillMaxSize().background(HomeBg)) {
+        // ---------- wall ----------
+        if (shown.isEmpty()) {
+            Text(
+                when {
+                    tab == 3 -> "no favourites yet —\nlong-press a photo ♥"
+                    tab == 1 && query.isNotBlank() -> "nothing found"
+                    else -> "your museum is empty —\ntake a photo with +"
+                },
+                color = Color(0xFF666666), fontFamily = Hand, fontSize = 22.sp,
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+        LazyVerticalStaggeredGrid(
+            columns = StaggeredGridCells.Fixed(cols),
+            state = gridState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 14.dp, end = 14.dp,
+                top = statusTop + 14.dp + if (searching) 64.dp else 0.dp,
+                bottom = 230.dp
+            ),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalItemSpacing = 10.dp
+        ) {
+            items(shown, key = { it.uri.toString() + it.isVideo }) { item ->
+                Tile(
+                    item = item,
+                    fav = item.uri.toString() in favs,
+                    onClick = { haptic(Hap.CLICK); viewerAt = shown.indexOf(item) },
+                    onLong = {
+                        val now = vm.toggleFavorite(item.uri)
+                        haptic(if (now) Hap.CONFIRM else Hap.HEAVY)
+                    }
+                )
+            }
+        }
+
+        // ---------- search field ----------
+        AnimatedVisibility(
+            searching,
+            modifier = Modifier.align(Alignment.TopCenter),
+            enter = fadeIn() + slideInVertically { -it }, exit = fadeOut() + slideOutVertically { -it }
+        ) {
+            val focus = remember { FocusRequester() }
+            LaunchedEffect(Unit) { focus.requestFocus() }
+            Row(
+                Modifier.padding(top = statusTop + 8.dp).padding(horizontal = 18.dp).fillMaxWidth().height(50.dp)
+                    .clip(CircleShape).background(Color(0xE61E1E1E)).border(1.dp, Color(0x22FFFFFF), CircleShape)
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Search, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                Spacer(Modifier.width(12.dp))
+                Box(Modifier.weight(1f)) {
+                    if (query.isEmpty()) Text("Search your museum…", color = Color(0xFF8A8A8A), fontSize = 16.sp)
+                    BasicTextField(
+                        value = query, onValueChange = { vm.query.value = it }, singleLine = true,
+                        cursorBrush = SolidColor(Ember),
+                        textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
+                        modifier = Modifier.fillMaxWidth().focusRequester(focus)
+                    )
+                }
+                if (query.isNotEmpty()) Icon(
+                    Icons.Filled.Close, null, tint = Color(0xFFAAAAAA),
+                    modifier = Modifier.size(22.dp).clip(CircleShape).clickable { haptic(Hap.TICK); vm.query.value = "" }
+                )
+            }
+        }
+
+        // ---------- bottom stack ----------
+        Column(Modifier.align(Alignment.BottomCenter), horizontalAlignment = Alignment.CenterHorizontally) {
+            AnimatedVisibility(
+                sheet,
+                enter = fadeIn() + slideInVertically { it / 2 } + scaleIn(initialScale = 0.9f),
+                exit = fadeOut() + slideOutVertically { it / 2 } + scaleOut(targetScale = 0.9f),
+                modifier = Modifier.align(Alignment.End).padding(end = 22.dp, bottom = 12.dp)
+            ) {
+                Column(
+                    Modifier.clip(RoundedCornerShape(24.dp)).background(Color(0xF01E1E1E))
+                        .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(24.dp)).padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    SheetRow(Icons.Filled.PhotoLibrary, "Import") {
+                        sheet = false; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    }
+                    SheetRow(Icons.Filled.PhotoCamera, "Camera") { sheet = false; showCamera = true }
+                    SheetRow(Icons.Filled.CalendarMonth, "Museum calendar") { sheet = false; showCalendar = true }
+                    SheetRow(Icons.Filled.GridView, "Grid: $cols columns") {
+                        cols = when (cols) { 4 -> 3; 3 -> 2; else -> 4 }
+                    }
+                }
+            }
+
+            NavPill(
+                tab = tab,
+                avatar = all.firstOrNull { !it.isVideo }?.uri,
+                onHome = {
+                    if (tab == 0) scope.launch { gridState.animateScrollToItem(0) }
+                    tab = 0; vm.query.value = ""; keyboard?.hide()
+                },
+                onSearch = { tab = if (tab == 1) 0 else 1; if (tab == 0) vm.query.value = "" },
+                onAdd = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+                onHeart = { tab = if (tab == 3) 0 else 3; vm.query.value = ""; keyboard?.hide() },
+                onProfile = { showCalendar = true },
+                haptic = haptic
+            )
+            Spacer(Modifier.height(14.dp))
+            BottomBar(
+                stackA = all.getOrNull(0)?.uri, stackB = all.getOrNull(1)?.uri,
+                sheetOpen = sheet,
+                onStack = { haptic(Hap.CONFIRM); showCarousel = true },
+                onCamera = { haptic(Hap.HEAVY); showCamera = true },
+                onMore = { haptic(Hap.CLICK); sheet = !sheet }
+            )
+        }
+
+        // ---------- overlays ----------
+        AnimatedVisibility(showCalendar, enter = fadeIn() + scaleIn(initialScale = 0.96f), exit = fadeOut() + scaleOut(targetScale = 0.96f)) {
+            MuseumScreen(vm, onExit = { showCalendar = false })
+        }
+        AnimatedVisibility(
+            showCarousel,
+            enter = fadeIn() + scaleIn(initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.9f)
+        ) {
+            MuseumCarousel("Your Museum", shown, 0) { showCarousel = false }
+        }
+        AnimatedVisibility(
+            showCamera,
+            enter = fadeIn() + slideInVertically { it / 6 }, exit = fadeOut() + slideOutVertically { it / 6 }
+        ) {
+            CameraScreen(
+                lastPhoto = all.firstOrNull { !it.isVideo }?.uri,
+                onClose = { showCamera = false },
+                onOpenGallery = { showCamera = false; showCarousel = true }
+            )
+        }
+        AnimatedVisibility(
+            viewerAt >= 0 && shown.isNotEmpty(),
+            enter = fadeIn() + scaleIn(initialScale = 0.85f), exit = fadeOut() + scaleOut(targetScale = 0.85f)
+        ) {
+            PhotoViewer(shown, viewerAt.coerceAtLeast(0)) { viewerAt = -1 }
+        }
+    }
+}
+
+@Composable
+private fun Tile(item: MediaItem, fav: Boolean, onClick: () -> Unit, onLong: () -> Unit) {
+    val ratio = if (item.width > 0 && item.height > 0)
+        (item.width.toFloat() / item.height).coerceIn(0.55f, 1.7f) else 0.78f
+    var pressed by remember { mutableStateOf(false) }
+    val s by animateFloatAsState(if (pressed) 0.95f else 1f, spring(0.6f, 500f), label = "tile")
+    Box(
+        Modifier.fillMaxWidth().aspectRatio(ratio).scale(s).clip(RoundedCornerShape(5.dp)).background(Cell)
+            .pointerInput(item.uri) {
+                detectTapGestures(
+                    onPress = { pressed = true; tryAwaitRelease(); pressed = false },
+                    onTap = { onClick() },
+                    onLongPress = { onLong() }
+                )
+            }
+    ) {
+        AsyncImage(item.uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        if (item.isVideo) Box(
+            Modifier.align(Alignment.Center).clip(RoundedCornerShape(10.dp)).background(Color(0x40FFFFFF))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) { Text("VIDEO", color = Color(0xCCFFFFFF), fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+        if (fav) Icon(
+            Icons.Filled.Favorite, null, tint = Ember,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(16.dp)
+        )
+    }
+}
+
+@Composable
+private fun NavPill(
+    tab: Int, avatar: Uri?,
+    onHome: () -> Unit, onSearch: () -> Unit, onAdd: () -> Unit, onHeart: () -> Unit, onProfile: () -> Unit,
+    haptic: (Hap) -> Unit
+) {
+    Row(
+        Modifier.height(66.dp).clip(CircleShape)
+            .background(Brush.horizontalGradient(listOf(Color(0xE63A3A3A), Color(0xE61C1C1C))))
+            .border(1.dp, Color(0x26FFFFFF), CircleShape).padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        NavItem(Icons.Outlined.Home, Icons.Outlined.Home, tab == 0) { haptic(Hap.CLICK); onHome() }
+        NavItem(Icons.Outlined.Search, Icons.Outlined.Search, tab == 1) { haptic(Hap.CLICK); onSearch() }
+        NavItem(Icons.Outlined.Add, Icons.Outlined.Add, false) { haptic(Hap.HEAVY); onAdd() }
+        NavItem(Icons.Outlined.FavoriteBorder, Icons.Filled.Favorite, tab == 3) { haptic(Hap.CLICK); onHeart() }
+        Box(
+            Modifier.size(52.dp).clip(CircleShape).clickable { haptic(Hap.CONFIRM); onProfile() },
+            contentAlignment = Alignment.Center
+        ) {
+            Box(Modifier.size(42.dp).clip(CircleShape).background(Cell).border(2.dp, Color(0xFFE8A33D), CircleShape)) {
+                if (avatar != null) AsyncImage(avatar, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            }
+        }
+    }
+}
+
+@Composable
+private fun NavItem(icon: ImageVector, selectedIcon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+    val bg by animateColorAsState(if (selected) Color.White else Color.Transparent, label = "navbg")
+    val tint by animateColorAsState(if (selected) Color(0xFF111111) else Color(0xFFD0D0D0), label = "navtint")
+    val press = remember { MutableInteractionSource() }
+    val pressed by press.collectIsPressedAsState()
+    val s by animateFloatAsState(if (pressed) 0.86f else 1f, spring(0.5f, 500f), label = "navscale")
+    Box(
+        Modifier.size(54.dp).scale(s).clip(CircleShape).background(bg)
+            .clickable(interactionSource = press, indication = null, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) { Icon(if (selected) selectedIcon else icon, null, tint = tint, modifier = Modifier.size(26.dp)) }
+}
+
+@Composable
+private fun BottomBar(
+    stackA: Uri?, stackB: Uri?, sheetOpen: Boolean,
+    onStack: () -> Unit, onCamera: () -> Unit, onMore: () -> Unit
+) {
+    val rot by animateFloatAsState(if (sheetOpen) 180f else 0f, spring(0.7f, 300f), label = "chev")
+    Row(
+        Modifier.fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color(0xFF4B4B4B), Color(0xFF1F1F1F))))
+            .navigationBarsPadding().height(84.dp).padding(horizontal = 22.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // stacked polaroids
+        Box(Modifier.size(54.dp).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onStack)) {
+            StackCard(stackB, Modifier.align(Alignment.Center).offset(x = (-4).dp, y = (-2).dp).rotate(-14f))
+            StackCard(stackA, Modifier.align(Alignment.Center).offset(x = 4.dp, y = 2.dp).rotate(9f))
+        }
+        // camera pill
+        val press = remember { MutableInteractionSource() }
+        val pressed by press.collectIsPressedAsState()
+        val s by animateFloatAsState(if (pressed) 0.92f else 1f, spring(0.5f, 500f), label = "plus")
+        Box(
+            Modifier.width(102.dp).height(52.dp).scale(s).clip(RoundedCornerShape(26.dp))
+                .background(Color(0x33FFFFFF)).border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(26.dp))
+                .clickable(interactionSource = press, indication = null, onClick = onCamera),
+            contentAlignment = Alignment.Center
+        ) { Icon(Icons.Outlined.Add, null, tint = Color.White, modifier = Modifier.size(30.dp)) }
+        // more
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).background(Color(0x40FFFFFF)).clickable(onClick = onMore),
+            contentAlignment = Alignment.Center
+        ) { Icon(Icons.Filled.KeyboardArrowUp, null, tint = Color.White, modifier = Modifier.size(30.dp).rotate(rot)) }
+    }
+}
+
+@Composable
+private fun StackCard(uri: Uri?, modifier: Modifier) {
+    Box(
+        modifier.size(40.dp, 46.dp).clip(RoundedCornerShape(4.dp)).background(Color.White).padding(2.dp)
+            .clip(RoundedCornerShape(2.dp)).background(Cell)
+    ) {
+        if (uri != null) AsyncImage(uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+    }
+}
+
+@Composable
+private fun SheetRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, color = Color.White, fontSize = 15.sp)
+    }
+}

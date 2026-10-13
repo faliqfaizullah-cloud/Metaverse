@@ -25,7 +25,9 @@ data class MediaItem(
     val takenMillis: Long,
     val name: String,
     val bucket: String,
-    val isVideo: Boolean
+    val isVideo: Boolean,
+    val width: Int = 0,
+    val height: Int = 0
 ) {
     val date: LocalDate
         get() = Instant.ofEpochMilli(takenMillis).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -71,7 +73,9 @@ class MediaRepository(private val context: Context) {
             MediaStore.MediaColumns.DISPLAY_NAME,
             MediaStore.MediaColumns.DATE_TAKEN,
             MediaStore.MediaColumns.DATE_ADDED,
-            MediaStore.MediaColumns.BUCKET_DISPLAY_NAME
+            MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+            MediaStore.MediaColumns.WIDTH,
+            MediaStore.MediaColumns.HEIGHT
         )
         val cr: ContentResolver = context.contentResolver
         try {
@@ -81,6 +85,8 @@ class MediaRepository(private val context: Context) {
                 val iTaken = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
                 val iAdded = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
                 val iBucket = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                val iW = c.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)
+                val iH = c.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT)
                 while (c.moveToNext() && list.size < 4000) {
                     val id = c.getLong(iId)
                     val taken = c.getLong(iTaken).takeIf { it > 0 } ?: (c.getLong(iAdded) * 1000)
@@ -90,7 +96,9 @@ class MediaRepository(private val context: Context) {
                         takenMillis = taken,
                         name = c.getString(iName) ?: "",
                         bucket = c.getString(iBucket) ?: "",
-                        isVideo = isVideo
+                        isVideo = isVideo,
+                        width = c.getInt(iW),
+                        height = c.getInt(iH)
                     )
                 }
             }

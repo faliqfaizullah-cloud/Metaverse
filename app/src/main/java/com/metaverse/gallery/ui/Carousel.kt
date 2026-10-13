@@ -493,3 +493,11 @@ private fun ZoomableImage(uri: Uri, onZoomChanged: (Boolean) -> Unit, onTap: () 
         AsyncImage(uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
     }
 }
+
+/** Full-screen photo viewer (swipe, pinch-zoom, pan, double-tap) usable from any screen. */
+@Composable
+fun PhotoViewer(list: List<MediaItem>, start: Int, onClose: () -> Unit) {
+    if (list.isEmpty()) return
+    BackHandler { onClose() }
+    ImageViewer(list = list, start = start.coerceIn(0, list.size - 1), onPage = {}, onClose = onClose)
+}

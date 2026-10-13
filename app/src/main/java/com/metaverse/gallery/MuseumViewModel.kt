@@ -1,6 +1,7 @@
 package com.metaverse.gallery
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.metaverse.gallery.data.MediaItem
@@ -16,10 +17,18 @@ import java.time.YearMonth
 
 class MuseumViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = MediaRepository(app)
+    private val prefs = app.getSharedPreferences("metaverse", 0)
     private var job: Job? = null
 
     private val _items = MutableStateFlow<List<MediaItem>>(emptyList())
     val items: StateFlow<List<MediaItem>> = _items.asStateFlow()
+
+    /** Photos the user imported with the picker (shown first on the home grid). */
+    private val _extras = MutableStateFlow<List<MediaItem>>(emptyList())
+    val extras: StateFlow<List<MediaItem>> = _extras.asStateFlow()
+
+    private val _favorites = MutableStateFlow(prefs.getStringSet("favs", emptySet()).orEmpty().toSet())
+    val favorites: StateFlow<Set<String>> = _favorites.asStateFlow()
 
     val month = MutableStateFlow(YearMonth.now())
     val selectedDay = MutableStateFlow<LocalDate?>(null)
@@ -36,5 +45,23 @@ class MuseumViewModel(app: Application) : AndroidViewModel(app) {
 
     fun shiftMonth(delta: Long) {
         month.value = month.value.plusMonths(delta)
+    }
+
+    fun addExtra(uri: Uri) {
+        if (_extras.value.any { it.uri == uri }) return
+        val type = getApplication<Application>().contentResolver.getType(uri).orEmpty()
+        val item = MediaItem(
+            id = uri.hashCode().toLong(), uri = uri, takenMillis = System.currentTimeMillis(),
+            name = "", bucket = "Imported", isVideo = type.startsWith("video")
+        )
+        _extras.value = listOf(item) + _extras.value
+    }
+
+    fun toggleFavorite(uri: Uri): Boolean {
+        val key = uri.toString()
+        val now = if (key in _favorites.value) _favorites.value - key else _favorites.value + key
+        _favorites.value = now
+        prefs.edit().putStringSet("favs", now).apply()
+        return key in now
     }
 }

@@ -17,7 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.metaverse.gallery.ui.MuseumScreen
+import com.metaverse.gallery.ui.HomeScreen
 import com.metaverse.gallery.ui.OnboardingScreen
 import com.metaverse.gallery.ui.theme.MetaverseTheme
 import androidx.compose.foundation.background
@@ -81,7 +81,7 @@ fun MetaverseApp(vm: MuseumViewModel = viewModel()) {
                 }
             )
         } else {
-            MuseumScreen(vm)
+            HomeScreen(vm)
         }
     }
 }

@@ -60,7 +60,7 @@ import java.time.format.TextStyle as DateTextStyle
 import java.util.Locale
 
 @Composable
-fun MuseumScreen(vm: MuseumViewModel) {
+fun MuseumScreen(vm: MuseumViewModel, onExit: () -> Unit = {}) {
     val haptic = rememberHaptics()
     val ctx = LocalContext.current
     val items by vm.items.collectAsState()
@@ -84,8 +84,12 @@ fun MuseumScreen(vm: MuseumViewModel) {
     }
     var showCamera by rememberSaveable { mutableStateOf(false) }
 
-    BackHandler(enabled = selected != null || full) {
-        if (full) vm.showFullMuseum.value = false else vm.selectedDay.value = null
+    BackHandler {
+        when {
+            full -> vm.showFullMuseum.value = false
+            selected != null -> vm.selectedDay.value = null
+            else -> onExit()
+        }
     }
 
     val boardPhotos: List<Uri> = (pinned + (byDate[today]?.map { it.uri } ?: items.take(6).map { it.uri })).take(6)
@@ -96,7 +100,7 @@ fun MuseumScreen(vm: MuseumViewModel) {
                 .padding(bottom = 120.dp)
                 .then(if (selected != null) Modifier.blur(18.dp) else Modifier)
         ) {
-            Header(haptic)
+            Header(haptic, onExit)
             CalendarBlock(
                 month = month, today = today, byDate = byDate, moods = moods,
                 onPrev = { haptic(Hap.TICK); vm.shiftMonth(-1) },
@@ -212,13 +216,13 @@ private fun RoundIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, onC
 }
 
 @Composable
-private fun Header(haptic: (Hap) -> Unit) {
+private fun Header(haptic: (Hap) -> Unit, onExit: () -> Unit) {
     val m = remember { LocalDate.now() }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 26.dp).padding(top = 22.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).clickable { haptic(Hap.CLICK); onExit() }) {
             Text("YOUR MUSEUM", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Medium, letterSpacing = (-0.5).sp)
             Text(
                 "${m.month.getDisplayName(DateTextStyle.FULL, Locale.getDefault())} ${m.year}",
