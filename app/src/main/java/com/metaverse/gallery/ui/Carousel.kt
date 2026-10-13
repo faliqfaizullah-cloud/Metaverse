@@ -1,6 +1,22 @@
 package com.metaverse.gallery.ui
 
 import android.net.Uri
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
+import com.metaverse.gallery.ui.theme.Ember
+import androidx.media3.common.MediaItem as ExoItem
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -227,11 +243,16 @@ private fun closeViewer(
 }
 
 @Composable
-private fun RoundBtn(icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier, onClick: () -> Unit) {
+private fun RoundBtn(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier,
+    tint: Color = Color.White,
+    onClick: () -> Unit
+) {
     Box(
         modifier.size(42.dp).clip(CircleShape).background(Color(0xCC1A1A1A)).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
-    ) { Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp)) }
+    ) { Icon(icon, null, tint = tint, modifier = Modifier.size(22.dp)) }
 }
 
 /** Observes two-finger pinches without consuming them, so scrolling keeps working. */
@@ -361,7 +382,17 @@ private fun Collage(list: List<MediaItem>, onPick: (Int) -> Unit) {
 }
 
 @Composable
-private fun ImageViewer(list: List<MediaItem>, start: Int, onPage: (Int) -> Unit, onClose: () -> Unit) {
+private fun ImageViewer(
+    list: List<MediaItem>,
+    start: Int,
+    onPage: (Int) -> Unit,
+    onClose: () -> Unit,
+    favs: Set<String> = emptySet(),
+    archiveMode: Boolean = false,
+    onFavorite: ((MediaItem) -> Unit)? = null,
+    onArchive: ((MediaItem) -> Unit)? = null,
+    onDelete: ((MediaItem) -> Unit)? = null
+) {
     val haptic = rememberHaptics()
     val pager = rememberPagerState(initialPage = start.coerceIn(0, list.size - 1)) { list.size }
     var zoomed by remember { mutableStateOf(false) }
@@ -385,11 +416,15 @@ private fun ImageViewer(list: List<MediaItem>, start: Int, onPage: (Int) -> Unit
             key = { list[it].uri.toString() },
             modifier = Modifier.fillMaxSize()
         ) { page ->
-            ZoomableImage(
-                uri = list[page].uri,
-                onZoomChanged = { zoomed = it },
-                onTap = { chrome = !chrome }
-            )
+            val it = list.getOrNull(page)
+            if (it != null) {
+                if (it.isVideo) VideoPage(it.uri, active = page == pager.currentPage)
+                else ZoomableImage(
+                    uri = it.uri,
+                    onZoomChanged = { z -> zoomed = z },
+                    onTap = { chrome = !chrome }
+                )
+            }
         }
 
         AnimatedVisibility(chrome, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
@@ -404,6 +439,27 @@ private fun ImageViewer(list: List<MediaItem>, start: Int, onPage: (Int) -> Unit
                     "${pager.currentPage + 1} / ${list.size}", color = Color.White, fontSize = 16.sp,
                     modifier = Modifier.align(Alignment.Center)
                 )
+                val cur = list.getOrNull(pager.currentPage)
+                if (cur != null) Row(
+                    Modifier.align(Alignment.CenterEnd).padding(end = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    onFavorite?.let { fav ->
+                        val on = cur.uri.toString() in favs
+                        RoundBtn(
+                            if (on) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder, Modifier,
+                            tint = if (on) Ember else Color.White
+                        ) { haptic(Hap.CONFIRM); fav(cur) }
+                    }
+                    onArchive?.let { arc ->
+                        RoundBtn(if (archiveMode) Icons.Filled.Unarchive else Icons.Filled.Archive, Modifier) {
+                            haptic(Hap.CONFIRM); arc(cur)
+                        }
+                    }
+                    onDelete?.let { del ->
+                        RoundBtn(Icons.Filled.Delete, Modifier, tint = Color(0xFFFF6A62)) { haptic(Hap.HEAVY); del(cur) }
+                    }
+                }
             }
         }
     }
@@ -494,10 +550,64 @@ private fun ZoomableImage(uri: Uri, onZoomChanged: (Boolean) -> Unit, onTap: () 
     }
 }
 
-/** Full-screen photo viewer (swipe, pinch-zoom, pan, double-tap) usable from any screen. */
+/** Full-screen viewer (photos: swipe, pinch-zoom, pan, double-tap; videos: play with controls). */
 @Composable
-fun PhotoViewer(list: List<MediaItem>, start: Int, onClose: () -> Unit) {
+fun PhotoViewer(
+    list: List<MediaItem>,
+    start: Int,
+    favs: Set<String> = emptySet(),
+    archiveMode: Boolean = false,
+    onFavorite: ((MediaItem) -> Unit)? = null,
+    onArchive: ((MediaItem) -> Unit)? = null,
+    onDelete: ((MediaItem) -> Unit)? = null,
+    onClose: () -> Unit
+) {
     if (list.isEmpty()) return
     BackHandler { onClose() }
-    ImageViewer(list = list, start = start.coerceIn(0, list.size - 1), onPage = {}, onClose = onClose)
+    ImageViewer(
+        list = list, start = start.coerceIn(0, list.size - 1), onPage = {}, onClose = onClose,
+        favs = favs, archiveMode = archiveMode, onFavorite = onFavorite, onArchive = onArchive, onDelete = onDelete
+    )
+}
+
+/** Plays a video with the standard transport controls; only the visible page owns a player. */
+@Composable
+private fun VideoPage(uri: Uri, active: Boolean) {
+    val ctx = LocalContext.current
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        if (!active) {
+            AsyncImage(uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            Icon(
+                Icons.Filled.PlayCircle, null, tint = Color(0xCCFFFFFF),
+                modifier = Modifier.align(Alignment.Center).size(72.dp)
+            )
+        } else {
+            val exo = remember(uri) {
+                ExoPlayer.Builder(ctx).build().apply {
+                    setMediaItem(ExoItem.fromUri(uri))
+                    repeatMode = Player.REPEAT_MODE_ONE
+                    prepare()
+                    playWhenReady = true
+                }
+            }
+            val owner = LocalLifecycleOwner.current
+            DisposableEffect(exo, owner) {
+                val obs = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_PAUSE) exo.pause() }
+                owner.lifecycle.addObserver(obs)
+                onDispose { owner.lifecycle.removeObserver(obs); exo.release() }
+            }
+            AndroidView(
+                factory = { c ->
+                    PlayerView(c).apply {
+                        player = exo
+                        useController = true
+                        controllerShowTimeoutMs = 2500
+                        setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                    }
+                },
+                modifier = Modifier.fillMaxSize().navigationBarsPadding()
+            )
+        }
+    }
 }

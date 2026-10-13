@@ -30,6 +30,9 @@ class MuseumViewModel(app: Application) : AndroidViewModel(app) {
     private val _favorites = MutableStateFlow(prefs.getStringSet("favs", emptySet()).orEmpty().toSet())
     val favorites: StateFlow<Set<String>> = _favorites.asStateFlow()
 
+    private val _archived = MutableStateFlow(prefs.getStringSet("archived", emptySet()).orEmpty().toSet())
+    val archived: StateFlow<Set<String>> = _archived.asStateFlow()
+
     val month = MutableStateFlow(YearMonth.now())
     val selectedDay = MutableStateFlow<LocalDate?>(null)
     val showFullMuseum = MutableStateFlow(false)
@@ -63,5 +66,17 @@ class MuseumViewModel(app: Application) : AndroidViewModel(app) {
         _favorites.value = now
         prefs.edit().putStringSet("favs", now).apply()
         return key in now
+    }
+
+    fun removeExtra(uri: Uri) {
+        _extras.value = _extras.value.filterNot { it.uri == uri }
+    }
+
+    /** Archive hides a photo from the wall (the file itself is untouched). */
+    fun setArchived(uri: Uri, archived: Boolean) {
+        val key = uri.toString()
+        val now = if (archived) _archived.value + key else _archived.value - key
+        _archived.value = now
+        prefs.edit().putStringSet("archived", now).apply()
     }
 }

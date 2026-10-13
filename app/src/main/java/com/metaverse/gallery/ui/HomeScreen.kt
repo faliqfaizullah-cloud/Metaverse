@@ -1,6 +1,23 @@
 package com.metaverse.gallery.ui
 
+import android.app.Activity
+import android.app.RecoverableSecurityException
 import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
+import androidx.activity.result.IntentSenderRequest
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
+import kotlin.math.abs
+import kotlin.math.max
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -94,6 +111,8 @@ fun HomeScreen(vm: MuseumViewModel) {
     val extras by vm.extras.collectAsState()
     val favs by vm.favorites.collectAsState()
     val query by vm.query.collectAsState()
+    val archived by vm.archived.collectAsState()
+    val ctx = LocalContext.current
 
     var tab by rememberSaveable { mutableIntStateOf(0) }       // 0 home, 1 search, 3 favourites
     var cols by rememberSaveable { mutableIntStateOf(4) }
@@ -102,10 +121,13 @@ fun HomeScreen(vm: MuseumViewModel) {
     var showCalendar by rememberSaveable { mutableStateOf(false) }
     var showCarousel by rememberSaveable { mutableStateOf(false) }
     var viewerAt by rememberSaveable { mutableIntStateOf(-1) }
+    var snack by remember { mutableStateOf<Snack?>(null) }
+    var pendingDelete by remember { mutableStateOf<MediaItem?>(null) }
+    LaunchedEffect(snack) { if (snack != null) { delay(3400); snack = null } }
 
     val all = remember(items, extras) { extras + items }
-    val shown = remember(all, favs, query, tab) {
-        var l = all
+    val shown = remember(all, favs, query, tab, archived) {
+        var l = all.filter { (it.uri.toString() in archived) == (tab == 5) }
         if (tab == 3) l = l.filter { it.uri.toString() in favs }
         if (tab == 1 && query.isNotBlank()) {
             val q = query.trim()
@@ -121,6 +143,48 @@ fun HomeScreen(vm: MuseumViewModel) {
     }
     val gridState = rememberLazyStaggeredGridState()
 
+    // ---- delete (asks the system for permission; photos are removed from the device) ----
+    val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
+        if (r.resultCode == Activity.RESULT_OK) {
+            val p = pendingDelete
+            if (Build.VERSION.SDK_INT == 29 && p != null) {
+                try { ctx.contentResolver.delete(p.uri, null, null) } catch (_: Exception) {}
+            }
+            haptic(Hap.CONFIRM)
+            snack = Snack("Deleted")
+        }
+        pendingDelete = null
+    }
+    fun deleteItem(item: MediaItem) {
+        haptic(Hap.HEAVY)
+        if (extras.any { it.uri == item.uri }) {
+            vm.removeExtra(item.uri); snack = Snack("Removed"); return
+        }
+        pendingDelete = item
+        val cr = ctx.contentResolver
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                val pi = MediaStore.createDeleteRequest(cr, listOf(item.uri))
+                deleteLauncher.launch(IntentSenderRequest.Builder(pi.intentSender).build())
+            } else {
+                cr.delete(item.uri, null, null)
+                snack = Snack("Deleted")
+            }
+        } catch (e: SecurityException) {
+            if (Build.VERSION.SDK_INT >= 29 && e is RecoverableSecurityException) {
+                deleteLauncher.launch(IntentSenderRequest.Builder(e.userAction.actionIntent.intentSender).build())
+            } else {
+                snack = Snack("Couldn't delete")
+            }
+        }
+    }
+    fun archiveItem(item: MediaItem) {
+        val un = item.uri.toString() in archived
+        vm.setArchived(item.uri, !un)
+        haptic(Hap.CONFIRM)
+        snack = Snack(if (un) "Restored" else "Archived", "UNDO") { vm.setArchived(item.uri, un) }
+    }
+
     BackHandler(enabled = sheet || tab != 0) {
         if (sheet) sheet = false else { tab = 0; vm.query.value = "" }
     }
@@ -133,6 +197,7 @@ fun HomeScreen(vm: MuseumViewModel) {
         if (shown.isEmpty()) {
             Text(
                 when {
+                    tab == 5 -> "nothing archived —\nswipe a photo right"
                     tab == 3 -> "no favourites yet —\nlong-press a photo ♥"
                     tab == 1 && query.isNotBlank() -> "nothing found"
                     else -> "your museum is empty —\ntake a photo with +"
@@ -147,21 +212,24 @@ fun HomeScreen(vm: MuseumViewModel) {
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 start = 14.dp, end = 14.dp,
-                top = statusTop + 14.dp + if (searching) 64.dp else 0.dp,
+                top = statusTop + 14.dp + if (searching || tab == 5) 64.dp else 0.dp,
                 bottom = 230.dp
             ),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalItemSpacing = 10.dp
         ) {
             items(shown, key = { it.uri.toString() + it.isVideo }) { item ->
-                Tile(
+                SwipeTile(
                     item = item,
                     fav = item.uri.toString() in favs,
+                    archiveMode = tab == 5,
                     onClick = { haptic(Hap.CLICK); viewerAt = shown.indexOf(item) },
                     onLong = {
                         val now = vm.toggleFavorite(item.uri)
                         haptic(if (now) Hap.CONFIRM else Hap.HEAVY)
-                    }
+                    },
+                    onArchive = { archiveItem(item) },
+                    onDelete = { deleteItem(item) }
                 )
             }
         }
@@ -198,6 +266,30 @@ fun HomeScreen(vm: MuseumViewModel) {
             }
         }
 
+        // ---------- archive header ----------
+        AnimatedVisibility(
+            tab == 5,
+            modifier = Modifier.align(Alignment.TopCenter),
+            enter = fadeIn() + slideInVertically { -it }, exit = fadeOut() + slideOutVertically { -it }
+        ) {
+            Row(
+                Modifier.padding(top = statusTop + 8.dp).padding(horizontal = 18.dp).fillMaxWidth().height(50.dp)
+                    .clip(CircleShape).background(Color(0xE61E1E1E)).border(1.dp, Color(0x22FFFFFF), CircleShape)
+                    .padding(start = 18.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Filled.Archive, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Text("ARCHIVE", color = Color.White, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text("  ·  ${shown.size}", color = Color(0xFF8A8A8A), fontFamily = Mono, fontSize = 13.sp)
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.Filled.Close, null, tint = Color.White,
+                    modifier = Modifier.size(36.dp).clip(CircleShape).clickable { haptic(Hap.CLICK); tab = 0 }.padding(7.dp)
+                )
+            }
+        }
+
         // ---------- bottom stack ----------
         Column(Modifier.align(Alignment.BottomCenter), horizontalAlignment = Alignment.CenterHorizontally) {
             AnimatedVisibility(
@@ -216,12 +308,32 @@ fun HomeScreen(vm: MuseumViewModel) {
                     }
                     SheetRow(Icons.Filled.PhotoCamera, "Camera") { sheet = false; showCamera = true }
                     SheetRow(Icons.Filled.CalendarMonth, "Museum calendar") { sheet = false; showCalendar = true }
+                    SheetRow(Icons.Filled.Inventory2, "Archive (${archived.size})") { sheet = false; tab = 5; vm.query.value = "" }
                     SheetRow(Icons.Filled.GridView, "Grid: $cols columns") {
                         cols = when (cols) { 4 -> 3; 3 -> 2; else -> 4 }
                     }
                 }
             }
 
+            AnimatedVisibility(
+                snack != null,
+                enter = fadeIn() + slideInVertically { it }, exit = fadeOut() + slideOutVertically { it }
+            ) {
+                val sn = snack
+                if (sn != null) Row(
+                    Modifier.padding(bottom = 12.dp).clip(CircleShape).background(Color(0xF0262626))
+                        .border(1.dp, Color(0x22FFFFFF), CircleShape)
+                        .padding(start = 20.dp, end = if (sn.action != null) 8.dp else 20.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(sn.text, color = Color.White, fontSize = 14.sp, modifier = Modifier.padding(vertical = 12.dp))
+                    if (sn.action != null) Text(
+                        sn.label, color = Color(0xFFFFD60A), fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 12.sp,
+                        modifier = Modifier.clip(CircleShape).clickable { haptic(Hap.CLICK); sn.action.invoke(); snack = null }
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                    )
+                }
+            }
             NavPill(
                 tab = tab,
                 avatar = all.firstOrNull { !it.isVideo }?.uri,
@@ -269,36 +381,103 @@ fun HomeScreen(vm: MuseumViewModel) {
             viewerAt >= 0 && shown.isNotEmpty(),
             enter = fadeIn() + scaleIn(initialScale = 0.85f), exit = fadeOut() + scaleOut(targetScale = 0.85f)
         ) {
-            PhotoViewer(shown, viewerAt.coerceAtLeast(0)) { viewerAt = -1 }
+            PhotoViewer(
+                list = shown, start = viewerAt.coerceAtLeast(0),
+                favs = favs, archiveMode = tab == 5,
+                onFavorite = { vm.toggleFavorite(it.uri) },
+                onArchive = { archiveItem(it) },
+                onDelete = { deleteItem(it) },
+                onClose = { viewerAt = -1 }
+            )
         }
     }
 }
 
+private data class Snack(val text: String, val label: String = "", val action: (() -> Unit)? = null)
+
+private val ArchiveGreen = Color(0xFF22B573)
+private val DeleteRed = Color(0xFFE5483F)
+
+/** A wall tile: tap = open, long-press = favourite, swipe right = archive, swipe left = delete. */
 @Composable
-private fun Tile(item: MediaItem, fav: Boolean, onClick: () -> Unit, onLong: () -> Unit) {
+private fun SwipeTile(
+    item: MediaItem, fav: Boolean, archiveMode: Boolean,
+    onClick: () -> Unit, onLong: () -> Unit, onArchive: () -> Unit, onDelete: () -> Unit
+) {
+    val haptic = rememberHaptics()
+    val scope = rememberCoroutineScope()
     val ratio = if (item.width > 0 && item.height > 0)
         (item.width.toFloat() / item.height).coerceIn(0.55f, 1.7f) else 0.78f
+    val offset = remember { Animatable(0f) }
+    var widthPx by remember { mutableFloatStateOf(1f) }
+    var armed by remember { mutableIntStateOf(0) }
     var pressed by remember { mutableStateOf(false) }
+    val thr by rememberUpdatedState(max(widthPx * 0.34f, 64f))
+    val archiveCb by rememberUpdatedState(onArchive)
+    val deleteCb by rememberUpdatedState(onDelete)
     val s by animateFloatAsState(if (pressed) 0.95f else 1f, spring(0.6f, 500f), label = "tile")
+    val iconScale by animateFloatAsState(if (armed != 0) 1.25f else 0.9f, spring(0.4f, 500f), label = "icon")
+    val o = offset.value
+
     Box(
-        Modifier.fillMaxWidth().aspectRatio(ratio).scale(s).clip(RoundedCornerShape(5.dp)).background(Cell)
-            .pointerInput(item.uri) {
-                detectTapGestures(
-                    onPress = { pressed = true; tryAwaitRelease(); pressed = false },
-                    onTap = { onClick() },
-                    onLongPress = { onLong() }
-                )
-            }
+        Modifier.fillMaxWidth().aspectRatio(ratio).scale(s).clip(RoundedCornerShape(5.dp))
+            .onSizeChanged { widthPx = it.width.toFloat() }
     ) {
-        AsyncImage(item.uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        if (item.isVideo) Box(
-            Modifier.align(Alignment.Center).clip(RoundedCornerShape(10.dp)).background(Color(0x40FFFFFF))
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-        ) { Text("VIDEO", color = Color(0xCCFFFFFF), fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
-        if (fav) Icon(
-            Icons.Filled.Favorite, null, tint = Ember,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(16.dp)
-        )
+        if (o != 0f) Box(
+            Modifier.matchParentSize().background(if (o > 0) ArchiveGreen else DeleteRed),
+            contentAlignment = if (o > 0) Alignment.CenterStart else Alignment.CenterEnd
+        ) {
+            Icon(
+                if (o > 0) (if (archiveMode) Icons.Filled.Unarchive else Icons.Filled.Archive) else Icons.Filled.Delete,
+                null, tint = Color.White,
+                modifier = Modifier.padding(horizontal = 8.dp).size(22.dp).scale(iconScale)
+            )
+        }
+        Box(
+            Modifier.fillMaxSize()
+                .graphicsLayer { translationX = offset.value }
+                .background(Cell)
+                .pointerInput(item.uri) {
+                    detectTapGestures(
+                        onPress = { pressed = true; tryAwaitRelease(); pressed = false },
+                        onTap = { onClick() },
+                        onLongPress = { onLong() }
+                    )
+                }
+                .pointerInput(item.uri) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { armed = 0 },
+                        onDragEnd = {
+                            scope.launch {
+                                val v = offset.value
+                                when {
+                                    v > thr -> { haptic(Hap.HEAVY); archiveCb() }
+                                    v < -thr -> { haptic(Hap.HEAVY); deleteCb() }
+                                }
+                                armed = 0
+                                offset.animateTo(0f, spring(0.7f, 380f))
+                            }
+                        },
+                        onDragCancel = { scope.launch { armed = 0; offset.animateTo(0f, spring(0.7f, 380f)) } },
+                        onHorizontalDrag = { change, dx ->
+                            change.consume()
+                            scope.launch { offset.snapTo(offset.value + dx) }
+                            val a = when { offset.value + dx > thr -> 1; offset.value + dx < -thr -> -1; else -> 0 }
+                            if (a != armed) { armed = a; if (a != 0) haptic(Hap.TICK) }
+                        }
+                    )
+                }
+        ) {
+            AsyncImage(item.uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            if (item.isVideo) Box(
+                Modifier.align(Alignment.Center).clip(RoundedCornerShape(10.dp)).background(Color(0x40FFFFFF))
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) { Text("VIDEO", color = Color(0xCCFFFFFF), fontFamily = Mono, fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+            if (fav) Icon(
+                Icons.Filled.Favorite, null, tint = Ember,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp).size(16.dp)
+            )
+        }
     }
 }
 

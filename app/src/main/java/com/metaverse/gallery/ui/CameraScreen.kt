@@ -20,6 +20,14 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.MediaStoreOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animate
@@ -151,6 +159,18 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
     var flashAnim by remember { mutableStateOf(false) }
     var thumb by remember { mutableStateOf(lastPhoto) }
     var thumbPop by remember { mutableIntStateOf(0) }
+    var videoMode by rememberSaveable { mutableStateOf(false) }
+    var recording by remember { mutableStateOf<Recording?>(null) }
+    var recSecs by remember { mutableIntStateOf(0) }
+    val recHolder = remember { arrayOfNulls<Recording>(1) }
+    val videoCapture = remember {
+        VideoCapture.withOutput(
+            Recorder.Builder()
+                .setQualitySelector(QualitySelector.from(Quality.FHD, FallbackStrategy.lowerQualityOrHigherThan(Quality.SD)))
+                .build()
+        )
+    }
+    val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     val style = CamStyle.entries[styleIdx % CamStyle.entries.size]
     val imageCapture = remember { ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build() }
@@ -164,10 +184,13 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
 
     LaunchedEffect(lastPhoto) { if (lastPhoto != null && thumb == null) thumb = lastPhoto }
     LaunchedEffect(flash) { imageCapture.flashMode = flash }
+    LaunchedEffect(flash, videoMode, camera) {
+        camera?.cameraControl?.enableTorch(videoMode && flash == ImageCapture.FLASH_MODE_ON)
+    }
     LaunchedEffect(toast) { if (toast != null) { delay(1100); toast = null } }
     LaunchedEffect(focusAt) { if (focusAt != null) { delay(900); focusAt = null } }
 
-    LaunchedEffect(allowed, front, rotation) {
+    LaunchedEffect(allowed, front, rotation, videoMode) {
         if (!allowed) return@LaunchedEffect
         try {
             val provider = ctx.cameraProvider()
@@ -178,7 +201,8 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
             imageCapture.targetRotation = rotation
             provider.unbindAll()
             val sel = if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
-            val cam = provider.bindToLifecycle(owner, sel, preview, imageCapture)
+            val cam = if (videoMode) provider.bindToLifecycle(owner, sel, preview, videoCapture)
+                      else provider.bindToLifecycle(owner, sel, preview, imageCapture)
             camera = cam
             val zs = cam.cameraInfo.zoomState.value
             minZoom = zs?.minZoomRatio ?: 1f
@@ -192,6 +216,7 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
     DisposableEffect(Unit) {
         onDispose {
             sound.release()
+            recHolder[0]?.stop()
             try { ProcessCameraProvider.getInstance(ctx).get().unbindAll() } catch (_: Exception) {}
         }
     }
@@ -210,6 +235,47 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
         val target = (next / BASE_MM).coerceIn(minZoom, maxZoom)
         val from = zoom
         scope.launch { animate(from, target, animationSpec = tween(260)) { v, _ -> applyZoom(v) } }
+    }
+
+    fun toggleRecording() {
+        val active = recording
+        if (active != null) { active.stop(); return }
+        haptic(Hap.HEAVY)
+        val name = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val cv = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, "Metaverse_$name.mp4")
+            put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+            if (Build.VERSION.SDK_INT >= 29) put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/Metaverse")
+        }
+        val out = MediaStoreOutputOptions.Builder(ctx.contentResolver, MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            .setContentValues(cv).build()
+        var pending = videoCapture.output.prepareRecording(ctx, out)
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            @Suppress("MissingPermission")
+            pending = pending.withAudioEnabled()
+        }
+        recSecs = 0
+        val r = pending.start(ContextCompat.getMainExecutor(ctx)) { ev ->
+            when (ev) {
+                is VideoRecordEvent.Status ->
+                    recSecs = (ev.recordingStats.recordedDurationNanos / 1_000_000_000L).toInt()
+                is VideoRecordEvent.Finalize -> {
+                    recording = null
+                    recHolder[0] = null
+                    if (!ev.hasError()) {
+                        thumb = ev.outputResults.outputUri
+                        thumbPop++
+                        haptic(Hap.CONFIRM)
+                    } else {
+                        haptic(Hap.REJECT)
+                        toast = "Couldn't save video"
+                    }
+                }
+                else -> {}
+            }
+        }
+        recording = r
+        recHolder[0] = r
     }
 
     fun capture() {
@@ -308,14 +374,38 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
                             else -> ImageCapture.FLASH_MODE_OFF
                         }
                     }
-                    GlassBtn(Icons.Filled.FlipCameraAndroid) { haptic(Hap.CONFIRM); front = !front }
+                    GlassBtn(Icons.Filled.FlipCameraAndroid) { if (recording == null) { haptic(Hap.CONFIRM); front = !front } }
+                }
+            }
+
+            Row(
+                Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 14.dp)
+                    .height(38.dp).clip(RoundedCornerShape(19.dp)).background(Color(0x77000000)).padding(3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (recording != null) {
+                    Box(Modifier.padding(start = 12.dp).size(9.dp).clip(CircleShape).background(Color(0xFFFF3B30)))
+                    Text(
+                        "%02d:%02d".format(recSecs / 60, recSecs % 60), color = Color.White, fontFamily = Mono,
+                        fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 12.dp)
+                    )
+                } else {
+                    ModeChip("PHOTO", !videoMode) { if (videoMode) { haptic(Hap.CONFIRM); videoMode = false } }
+                    ModeChip("VIDEO", videoMode) {
+                        if (!videoMode) {
+                            haptic(Hap.CONFIRM); videoMode = true
+                            if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                audioLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        }
+                    }
                 }
             }
 
             toast?.let {
                 Text(
                     it, color = Color.White, fontFamily = Mono, fontSize = 12.sp,
-                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 18.dp)
+                    modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 66.dp)
                         .clip(RoundedCornerShape(12.dp)).background(Color(0x99000000))
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 )
@@ -352,7 +442,11 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
             else Icon(Icons.Filled.Image, null, tint = Color(0x66FFFFFF), modifier = Modifier.size(24.dp))
         }
     }
-    val shutterUi: @Composable () -> Unit = { Shutter(style, vertical = landscape) { capture() } }
+    val shutterUi: @Composable () -> Unit = {
+        Shutter(style, vertical = landscape, video = videoMode, recording = recording != null) {
+            if (videoMode) toggleRecording() else capture()
+        }
+    }
     val dotsUi: @Composable () -> Unit = {
         Box(
             Modifier.size(52.dp).clip(CircleShape).pointerInput(Unit) {
@@ -407,7 +501,7 @@ fun CameraScreen(lastPhoto: Uri?, onClose: () -> Unit, onOpenGallery: () -> Unit
 }
 
 @Composable
-private fun Shutter(style: CamStyle, vertical: Boolean, onClick: () -> Unit) {
+private fun Shutter(style: CamStyle, vertical: Boolean, video: Boolean, recording: Boolean, onClick: () -> Unit) {
     val press = remember { MutableInteractionSource() }
     val pressed by press.collectIsPressedAsState()
     val sc by animateFloatAsState(if (pressed) 0.9f else 1f, spring(0.5f, 500f), label = "shutter")
@@ -426,13 +520,17 @@ private fun Shutter(style: CamStyle, vertical: Boolean, onClick: () -> Unit) {
         Modifier.size(w, h).scale(sc).clickable(interactionSource = press, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
+        val fill = if (video) Color(0xFFFF3B30) else style.accent
+        val inset by androidx.compose.animation.core.animateDpAsState(
+            if (recording) 26.dp else 10.dp, spring(0.6f, 400f), label = "inset"
+        )
         Box(Modifier.fillMaxSize().border(4.dp, style.accent, shape))
         Box(
-            Modifier.fillMaxSize().padding(10.dp).clip(shape)
-                .background(Brush.verticalGradient(listOf(style.accent, style.accent.copy(alpha = 0.88f)))),
+            Modifier.fillMaxSize().padding(inset).clip(if (recording) RoundedCornerShape(10.dp) else shape)
+                .background(Brush.verticalGradient(listOf(fill, fill.copy(alpha = 0.88f)))),
             contentAlignment = Alignment.Center
         ) {
-            if (style.plus) Canvas(Modifier.size(26.dp)) {
+            if (style.plus && !video) Canvas(Modifier.size(26.dp)) {
                 val c = Color(0xFF111111)
                 drawLine(c, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), 5f, StrokeCap.Round)
                 drawLine(c, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 5f, StrokeCap.Round)
@@ -475,5 +573,20 @@ private fun PermissionCard(modifier: Modifier, onAllow: () -> Unit) {
             Modifier.clip(CircleShape).background(Color.White).clickable(onClick = onAllow)
                 .padding(horizontal = 24.dp, vertical = 12.dp)
         ) { Text("Allow camera", color = Color.Black, fontWeight = FontWeight.Medium) }
+    }
+}
+
+@Composable
+private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.height(32.dp).clip(RoundedCornerShape(16.dp))
+            .background(if (selected) Color.White else Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 11.sp,
+            color = if (selected) Color.Black else Color(0xFFDDDDDD)
+        )
     }
 }
