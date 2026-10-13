@@ -82,7 +82,7 @@ fun MuseumScreen(vm: MuseumViewModel) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) { pinned.add(0, uri); haptic(Hap.CONFIRM) }
     }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+    var showCamera by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = selected != null || full) {
         if (full) vm.showFullMuseum.value = false else vm.selectedDay.value = null
@@ -121,7 +121,7 @@ fun MuseumScreen(vm: MuseumViewModel) {
                     photos = boardPhotos,
                     onCamera = {
                         haptic(Hap.CLICK)
-                        camera.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
+                        showCamera = true
                     }
                 )
             }
@@ -161,6 +161,23 @@ fun MuseumScreen(vm: MuseumViewModel) {
                     },
                 contentAlignment = Alignment.Center
             ) { Icon(Icons.Filled.Add, null, tint = Color.White, modifier = Modifier.size(30.dp)) }
+        }
+
+        // in-app camera
+        AnimatedVisibility(
+            showCamera,
+            enter = fadeIn() + androidx.compose.animation.slideInVertically { it / 6 },
+            exit = fadeOut() + androidx.compose.animation.slideOutVertically { it / 6 }
+        ) {
+            CameraScreen(
+                lastPhoto = items.firstOrNull { !it.isVideo }?.uri,
+                onClose = { showCamera = false },
+                onOpenGallery = {
+                    showCamera = false
+                    vm.selectedDay.value = null
+                    vm.showFullMuseum.value = true
+                }
+            )
         }
 
         // polaroid pop-up
