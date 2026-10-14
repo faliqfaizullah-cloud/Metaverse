@@ -7,6 +7,14 @@ import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.result.IntentSenderRequest
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.shadow
+import kotlin.math.sin
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Delete
@@ -192,7 +200,11 @@ fun HomeScreen(vm: MuseumViewModel) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val searching = tab == 1
 
-    Box(Modifier.fillMaxSize().background(HomeBg)) {
+    val bgColor by animateColorAsState(if (tab == 0) BoardBg else HomeBg, tween(400), label = "bg")
+    val navInf = rememberInfiniteTransition(label = "navfloat")
+    val navBob = navInf.animateFloat(0f, 1f, infiniteRepeatable(tween(5200, easing = LinearEasing), RepeatMode.Restart), label = "nb")
+
+    Box(Modifier.fillMaxSize().background(bgColor)) {
         // ---------- wall ----------
         if (shown.isEmpty()) {
             Text(
@@ -202,11 +214,23 @@ fun HomeScreen(vm: MuseumViewModel) {
                     tab == 1 && query.isNotBlank() -> "nothing found"
                     else -> "your museum is empty —\ntake a photo with +"
                 },
-                color = Color(0xFF666666), fontFamily = Hand, fontSize = 22.sp,
+                color = if (tab == 0) Color(0xFF77777A) else Color(0xFF666666), fontFamily = Hand, fontSize = 22.sp,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
-        LazyVerticalStaggeredGrid(
+        if (tab == 0 && shown.isNotEmpty()) {
+            BoardHome(
+                items = shown, favs = favs,
+                topPad = statusTop, bottomPad = 250.dp,
+                actions = BoardActions(
+                    open = { viewerAt = shown.indexOf(it) },
+                    favorite = { vm.toggleFavorite(it.uri) },
+                    archive = { archiveItem(it) },
+                    delete = { deleteItem(it) },
+                    camera = { haptic(Hap.HEAVY); showCamera = true }
+                )
+            )
+        } else LazyVerticalStaggeredGrid(
             columns = StaggeredGridCells.Fixed(cols),
             state = gridState,
             modifier = Modifier.fillMaxSize(),
@@ -291,7 +315,7 @@ fun HomeScreen(vm: MuseumViewModel) {
         }
 
         // ---------- bottom stack ----------
-        Column(Modifier.align(Alignment.BottomCenter), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             AnimatedVisibility(
                 sheet,
                 enter = fadeIn() + slideInVertically { it / 2 } + scaleIn(initialScale = 0.9f),
@@ -334,6 +358,7 @@ fun HomeScreen(vm: MuseumViewModel) {
                     )
                 }
             }
+            Box(Modifier.graphicsLayer { translationY = sin(navBob.value * 6.2831855f) * 3.dp.toPx() }) {
             NavPill(
                 tab = tab,
                 avatar = all.firstOrNull { !it.isVideo }?.uri,
@@ -347,6 +372,7 @@ fun HomeScreen(vm: MuseumViewModel) {
                 onProfile = { showCalendar = true },
                 haptic = haptic
             )
+            }
             Spacer(Modifier.height(14.dp))
             BottomBar(
                 stackA = all.getOrNull(0)?.uri, stackB = all.getOrNull(1)?.uri,
@@ -488,7 +514,7 @@ private fun NavPill(
     haptic: (Hap) -> Unit
 ) {
     Row(
-        Modifier.height(66.dp).clip(CircleShape)
+        Modifier.height(66.dp).shadow(20.dp, CircleShape).clip(CircleShape)
             .background(Brush.horizontalGradient(listOf(Color(0xE63A3A3A), Color(0xE61C1C1C))))
             .border(1.dp, Color(0x26FFFFFF), CircleShape).padding(horizontal = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -530,9 +556,12 @@ private fun BottomBar(
 ) {
     val rot by animateFloatAsState(if (sheetOpen) 180f else 0f, spring(0.7f, 300f), label = "chev")
     Row(
-        Modifier.fillMaxWidth()
+        Modifier.padding(horizontal = 16.dp).fillMaxWidth().height(72.dp)
+            .shadow(22.dp, RoundedCornerShape(40.dp))
+            .clip(RoundedCornerShape(40.dp))
             .background(Brush.verticalGradient(listOf(Color(0xFF4B4B4B), Color(0xFF1F1F1F))))
-            .navigationBarsPadding().height(84.dp).padding(horizontal = 22.dp),
+            .border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(40.dp))
+            .padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
