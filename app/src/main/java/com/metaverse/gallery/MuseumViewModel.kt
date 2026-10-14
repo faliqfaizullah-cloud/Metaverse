@@ -33,6 +33,21 @@ class MuseumViewModel(app: Application) : AndroidViewModel(app) {
     private val _archived = MutableStateFlow(prefs.getStringSet("archived", emptySet()).orEmpty().toSet())
     val archived: StateFlow<Set<String>> = _archived.asStateFlow()
 
+    private val _views = MutableStateFlow(
+        prefs.all.entries.mapNotNull { e ->
+            (e.value as? Int)?.takeIf { e.key.startsWith("v:") }?.let { e.key.removePrefix("v:") to it }
+        }.toMap()
+    )
+    /** How many times each photo has been opened (drives "Most viewed"). */
+    val views: StateFlow<Map<String, Int>> = _views.asStateFlow()
+
+    fun bumpView(uri: Uri) {
+        val k = uri.toString()
+        val n = (_views.value[k] ?: 0) + 1
+        _views.value = _views.value + (k to n)
+        prefs.edit().putInt("v:$k", n).apply()
+    }
+
     val month = MutableStateFlow(YearMonth.now())
     val selectedDay = MutableStateFlow<LocalDate?>(null)
     val showFullMuseum = MutableStateFlow(false)

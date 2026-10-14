@@ -223,7 +223,7 @@ fun HomeScreen(vm: MuseumViewModel) {
                 items = shown, favs = favs,
                 topPad = statusTop, bottomPad = 250.dp,
                 actions = BoardActions(
-                    open = { viewerAt = shown.indexOf(it) },
+                    open = { vm.bumpView(it.uri); viewerAt = shown.indexOf(it) },
                     favorite = { vm.toggleFavorite(it.uri) },
                     archive = { archiveItem(it) },
                     delete = { deleteItem(it) },
@@ -247,7 +247,7 @@ fun HomeScreen(vm: MuseumViewModel) {
                     item = item,
                     fav = item.uri.toString() in favs,
                     archiveMode = tab == 5,
-                    onClick = { haptic(Hap.CLICK); viewerAt = shown.indexOf(item) },
+                    onClick = { haptic(Hap.CLICK); vm.bumpView(item.uri); viewerAt = shown.indexOf(item) },
                     onLong = {
                         val now = vm.toggleFavorite(item.uri)
                         haptic(if (now) Hap.CONFIRM else Hap.HEAVY)
@@ -385,7 +385,11 @@ fun HomeScreen(vm: MuseumViewModel) {
 
         // ---------- overlays ----------
         AnimatedVisibility(showCalendar, enter = fadeIn() + scaleIn(initialScale = 0.96f), exit = fadeOut() + scaleOut(targetScale = 0.96f)) {
-            MuseumScreen(vm, onExit = { showCalendar = false })
+            MuseumScreen(
+                vm,
+                onExit = { showCalendar = false },
+                onOpen = { vm.bumpView(it.uri); val i = shown.indexOf(it); if (i >= 0) viewerAt = i }
+            )
         }
         AnimatedVisibility(
             showCarousel,
