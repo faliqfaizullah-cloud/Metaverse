@@ -11,6 +11,14 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
@@ -27,7 +35,40 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        setContent { MetaverseTheme { MetaverseApp() } }
+        setContent {
+            MetaverseTheme {
+                var crash by remember { mutableStateOf(readCrash()) }
+                if (crash != null) CrashScreen(crash!!) { clearCrash(); crash = null }
+                else MetaverseApp()
+            }
+        }
+    }
+
+    private fun readCrash(): String? =
+        try { java.io.File(filesDir, "crash.txt").takeIf { it.exists() }?.readText()?.take(5000) } catch (_: Throwable) { null }
+
+    private fun clearCrash() { try { java.io.File(filesDir, "crash.txt").delete() } catch (_: Throwable) {} }
+}
+
+@Composable
+private fun CrashScreen(trace: String, onDismiss: () -> Unit) {
+    androidx.compose.foundation.layout.Column(
+        Modifier.fillMaxSize().background(Ink).statusBarsPadding().navigationBarsPadding()
+            .padding(16.dp)
+    ) {
+        androidx.compose.material3.Text("The app crashed last time", color = androidx.compose.ui.graphics.Color.White, fontSize = 20.sp)
+        androidx.compose.material3.Text("Send a screenshot of this to Claude.", color = androidx.compose.ui.graphics.Color(0xFF999999), fontSize = 13.sp)
+        androidx.compose.foundation.layout.Spacer(Modifier.height(10.dp))
+        androidx.compose.foundation.text.selection.SelectionContainer(Modifier.weight(1f)) {
+            androidx.compose.material3.Text(
+                trace, color = androidx.compose.ui.graphics.Color(0xFFFF8A80), fontSize = 9.sp, lineHeight = 11.sp,
+                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())
+            )
+        }
+        androidx.compose.material3.Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+            androidx.compose.material3.Text("Dismiss and open app")
+        }
     }
 }
 
