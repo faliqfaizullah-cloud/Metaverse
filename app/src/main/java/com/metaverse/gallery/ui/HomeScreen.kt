@@ -7,6 +7,8 @@ import android.os.Build
 import android.provider.MediaStore
 import androidx.activity.result.IntentSenderRequest
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -123,7 +125,8 @@ fun HomeScreen(vm: MuseumViewModel) {
     val ctx = LocalContext.current
 
     var tab by rememberSaveable { mutableIntStateOf(0) }       // 0 home, 1 search, 3 favourites
-    var cols by rememberSaveable { mutableIntStateOf(4) }
+    var cols by rememberSaveable { mutableIntStateOf(0) }          // 0 = floating board, else grid columns
+    var topTick by remember { mutableIntStateOf(0) }
     var sheet by remember { mutableStateOf(false) }
     var showCamera by rememberSaveable { mutableStateOf(false) }
     var showCalendar by rememberSaveable { mutableStateOf(false) }
@@ -200,11 +203,22 @@ fun HomeScreen(vm: MuseumViewModel) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val searching = tab == 1
 
-    val bgColor by animateColorAsState(if (tab == 0) BoardBg else HomeBg, tween(400), label = "bg")
+    val lightUi = cols == 0
+    val board = lightUi && shown.isNotEmpty()
+    val bgColor by animateColorAsState(if (lightUi) BoardBg else HomeBg, tween(500), label = "bg")
+    val covered = showCalendar || showCarousel || showCamera || viewerAt >= 0
+    val coverAnim by animateFloatAsState(if (covered) 1f else 0f, tween(520, easing = FastOutSlowInEasing), label = "cover")
     val navInf = rememberInfiniteTransition(label = "navfloat")
     val navBob = navInf.animateFloat(0f, 1f, infiniteRepeatable(tween(5200, easing = LinearEasing), RepeatMode.Restart), label = "nb")
 
     Box(Modifier.fillMaxSize().background(bgColor)) {
+        Atmosphere(lightUi)
+        // everything below sinks back (scale + dim) while a full-screen view is open
+        Box(Modifier.fillMaxSize().graphicsLayer {
+            val s = 1f - 0.07f * coverAnim
+            scaleX = s; scaleY = s
+            alpha = 1f - 0.55f * coverAnim
+        }) {
         // ---------- wall ----------
         if (shown.isEmpty()) {
             Text(
@@ -214,14 +228,17 @@ fun HomeScreen(vm: MuseumViewModel) {
                     tab == 1 && query.isNotBlank() -> "nothing found"
                     else -> "your museum is empty —\ntake a photo with +"
                 },
-                color = if (tab == 0) Color(0xFF77777A) else Color(0xFF666666), fontFamily = Hand, fontSize = 22.sp,
+                color = if (lightUi) Color(0xFF77777A) else Color(0xFF666666), fontFamily = Hand, fontSize = 22.sp,
                 modifier = Modifier.align(Alignment.Center)
             )
         }
-        if (tab == 0 && shown.isNotEmpty()) {
+        if (board) {
             BoardHome(
                 items = shown, favs = favs,
-                topPad = statusTop, bottomPad = 250.dp,
+                title = when (tab) { 1 -> "Search"; 3 -> "Favourites"; 5 -> "Archive"; else -> "" },
+                topPad = statusTop + if (searching || tab == 5) 64.dp else 0.dp,
+                bottomPad = 250.dp,
+                scrollTick = topTick,
                 actions = BoardActions(
                     open = { vm.bumpView(it.uri); viewerAt = shown.indexOf(it) },
                     favorite = { vm.toggleFavorite(it.uri) },
@@ -318,8 +335,8 @@ fun HomeScreen(vm: MuseumViewModel) {
         Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             AnimatedVisibility(
                 sheet,
-                enter = fadeIn() + slideInVertically { it / 2 } + scaleIn(initialScale = 0.9f),
-                exit = fadeOut() + slideOutVertically { it / 2 } + scaleOut(targetScale = 0.9f),
+                enter = fadeIn() + slideInVertically { it / 2 } + scaleIn(tween(480, easing = FastOutSlowInEasing), 0.9f),
+                exit = fadeOut() + slideOutVertically { it / 2 } + scaleOut(tween(320, easing = FastOutSlowInEasing), 0.9f),
                 modifier = Modifier.align(Alignment.End).padding(end = 22.dp, bottom = 12.dp)
             ) {
                 Column(
@@ -333,8 +350,8 @@ fun HomeScreen(vm: MuseumViewModel) {
                     SheetRow(Icons.Filled.PhotoCamera, "Camera") { sheet = false; showCamera = true }
                     SheetRow(Icons.Filled.CalendarMonth, "Museum calendar") { sheet = false; showCalendar = true }
                     SheetRow(Icons.Filled.Inventory2, "Archive (${archived.size})") { sheet = false; tab = 5; vm.query.value = "" }
-                    SheetRow(Icons.Filled.GridView, "Grid: $cols columns") {
-                        cols = when (cols) { 4 -> 3; 3 -> 2; else -> 4 }
+                    SheetRow(Icons.Filled.GridView, if (cols == 0) "Layout: Floating board" else "Layout: Grid · $cols columns") {
+                        cols = when (cols) { 0 -> 4; 4 -> 3; 3 -> 2; else -> 0 }
                     }
                 }
             }
@@ -363,7 +380,7 @@ fun HomeScreen(vm: MuseumViewModel) {
                 tab = tab,
                 avatar = all.firstOrNull { !it.isVideo }?.uri,
                 onHome = {
-                    if (tab == 0) scope.launch { gridState.animateScrollToItem(0) }
+                    if (tab == 0) { topTick++; scope.launch { gridState.animateScrollToItem(0) } }
                     tab = 0; vm.query.value = ""; keyboard?.hide()
                 },
                 onSearch = { tab = if (tab == 1) 0 else 1; if (tab == 0) vm.query.value = "" },
@@ -383,8 +400,9 @@ fun HomeScreen(vm: MuseumViewModel) {
             )
         }
 
+        }
         // ---------- overlays ----------
-        AnimatedVisibility(showCalendar, enter = fadeIn() + scaleIn(initialScale = 0.96f), exit = fadeOut() + scaleOut(targetScale = 0.96f)) {
+        AnimatedVisibility(showCalendar, enter = fadeIn(tween(380)) + scaleIn(tween(480, easing = FastOutSlowInEasing), 0.96f), exit = fadeOut(tween(260)) + scaleOut(tween(320, easing = FastOutSlowInEasing), 0.96f)) {
             MuseumScreen(
                 vm,
                 onExit = { showCalendar = false },
@@ -393,7 +411,7 @@ fun HomeScreen(vm: MuseumViewModel) {
         }
         AnimatedVisibility(
             showCarousel,
-            enter = fadeIn() + scaleIn(initialScale = 0.9f), exit = fadeOut() + scaleOut(targetScale = 0.9f)
+            enter = fadeIn(tween(380)) + scaleIn(tween(480, easing = FastOutSlowInEasing), 0.9f), exit = fadeOut(tween(260)) + scaleOut(tween(320, easing = FastOutSlowInEasing), 0.9f)
         ) {
             MuseumCarousel("Your Museum", shown, 0) { showCarousel = false }
         }
@@ -409,7 +427,7 @@ fun HomeScreen(vm: MuseumViewModel) {
         }
         AnimatedVisibility(
             viewerAt >= 0 && shown.isNotEmpty(),
-            enter = fadeIn() + scaleIn(initialScale = 0.85f), exit = fadeOut() + scaleOut(targetScale = 0.85f)
+            enter = fadeIn(tween(380)) + scaleIn(tween(480, easing = FastOutSlowInEasing), 0.85f), exit = fadeOut(tween(260)) + scaleOut(tween(320, easing = FastOutSlowInEasing), 0.85f)
         ) {
             PhotoViewer(
                 list = shown, start = viewerAt.coerceAtLeast(0),
@@ -517,23 +535,35 @@ private fun NavPill(
     onHome: () -> Unit, onSearch: () -> Unit, onAdd: () -> Unit, onHeart: () -> Unit, onProfile: () -> Unit,
     haptic: (Hap) -> Unit
 ) {
-    Row(
+    val idx = when (tab) { 0 -> 0; 1 -> 1; 3 -> 3; else -> -1 }
+    val ix by animateDpAsState(8.dp + 60.dp * idx.coerceAtLeast(0), spring(0.85f, 320f), label = "navind")
+    val ia by animateFloatAsState(if (idx >= 0) 1f else 0f, tween(260), label = "navinda")
+    Box(
         Modifier.height(66.dp).shadow(20.dp, CircleShape).clip(CircleShape)
             .background(Brush.horizontalGradient(listOf(Color(0xE63A3A3A), Color(0xE61C1C1C))))
-            .border(1.dp, Color(0x26FFFFFF), CircleShape).padding(horizontal = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .border(1.dp, Color(0x26FFFFFF), CircleShape)
     ) {
-        NavItem(Icons.Outlined.Home, Icons.Outlined.Home, tab == 0) { haptic(Hap.CLICK); onHome() }
-        NavItem(Icons.Outlined.Search, Icons.Outlined.Search, tab == 1) { haptic(Hap.CLICK); onSearch() }
-        NavItem(Icons.Outlined.Add, Icons.Outlined.Add, false) { haptic(Hap.HEAVY); onAdd() }
-        NavItem(Icons.Outlined.FavoriteBorder, Icons.Filled.Favorite, tab == 3) { haptic(Hap.CLICK); onHeart() }
+        // the white bubble glides between tabs
         Box(
-            Modifier.size(52.dp).clip(CircleShape).clickable { haptic(Hap.CONFIRM); onProfile() },
-            contentAlignment = Alignment.Center
+            Modifier.offset(x = ix, y = 6.dp).size(54.dp).graphicsLayer { alpha = ia }
+                .clip(CircleShape).background(Color.White)
+        )
+        Row(
+            Modifier.height(66.dp).padding(horizontal = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(Modifier.size(42.dp).clip(CircleShape).background(Cell).border(2.dp, Color(0xFFE8A33D), CircleShape)) {
-                if (avatar != null) AsyncImage(avatar, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            NavItem(Icons.Outlined.Home, Icons.Outlined.Home, tab == 0) { haptic(Hap.CLICK); onHome() }
+            NavItem(Icons.Outlined.Search, Icons.Outlined.Search, tab == 1) { haptic(Hap.CLICK); onSearch() }
+            NavItem(Icons.Outlined.Add, Icons.Outlined.Add, false) { haptic(Hap.HEAVY); onAdd() }
+            NavItem(Icons.Outlined.FavoriteBorder, Icons.Filled.Favorite, tab == 3) { haptic(Hap.CLICK); onHeart() }
+            Box(
+                Modifier.size(52.dp).clip(CircleShape).clickable { haptic(Hap.CONFIRM); onProfile() },
+                contentAlignment = Alignment.Center
+            ) {
+                Box(Modifier.size(42.dp).clip(CircleShape).background(Cell).border(2.dp, Color(0xFFE8A33D), CircleShape)) {
+                    if (avatar != null) AsyncImage(avatar, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                }
             }
         }
     }
@@ -541,13 +571,12 @@ private fun NavPill(
 
 @Composable
 private fun NavItem(icon: ImageVector, selectedIcon: ImageVector, selected: Boolean, onClick: () -> Unit) {
-    val bg by animateColorAsState(if (selected) Color.White else Color.Transparent, label = "navbg")
-    val tint by animateColorAsState(if (selected) Color(0xFF111111) else Color(0xFFD0D0D0), label = "navtint")
+    val tint by animateColorAsState(if (selected) Color(0xFF111111) else Color(0xFFD0D0D0), tween(260), label = "navtint")
     val press = remember { MutableInteractionSource() }
     val pressed by press.collectIsPressedAsState()
-    val s by animateFloatAsState(if (pressed) 0.86f else 1f, spring(0.5f, 500f), label = "navscale")
+    val s by animateFloatAsState(if (pressed) 0.86f else 1f, spring(0.8f, 500f), label = "navscale")
     Box(
-        Modifier.size(54.dp).scale(s).clip(CircleShape).background(bg)
+        Modifier.size(54.dp).scale(s).clip(CircleShape)
             .clickable(interactionSource = press, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center
     ) { Icon(if (selected) selectedIcon else icon, null, tint = tint, modifier = Modifier.size(26.dp)) }
